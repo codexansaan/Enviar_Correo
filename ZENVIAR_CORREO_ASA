@@ -1,0 +1,243 @@
+*&---------------------------------------------------------------------*
+*& Report ZENVIAR_CORREO_ASA
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zenviar_correo_asa.
+INCLUDE zenviar_correo_top.
+INCLUDE zenviar_correo_sl01.
+INCLUDE zenviar_correo_f01.
+INCLUDE zenviar_correo_even.
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+*&---------------------------------------------------------------------*
+*& Include          ZENVIAR_CORREO_TOP
+*&---------------------------------------------------------------------*
+TYPES: BEGIN OF tys_attachment,
+         filename TYPE string,
+         filedata TYPE solix_tab,
+         filesize TYPE i,
+       END OF tys_attachment.
+
+DATA: go_bcs_send_request     TYPE REF TO cl_bcs.
+DATA: gt_files                TYPE TABLE OF tys_attachment.
+DATA: gv_contador_archivos    TYPE i.
+DATA: gv_archivos_adjuntos    TYPE i.
+DATA: gv_text_archivo         TYPE string.
+DATA: gv_path                 TYPE rlgrap-filename.
+DATA: gs_file                 TYPE tys_attachment.
+DATA: sent_to_all             TYPE os_boolean.
+
+//////////////////////////////////////////////////////////////////////////////////////////
+
+*&---------------------------------------------------------------------*
+*& Include          ZENVIAR_CORREO_SL01
+*&---------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK 00 WITH FRAME TITLE TEXT-000.
+  PARAMETERS: mailto      TYPE adr6-smtp_addr.
+  PARAMETERS: sapuser     TYPE uname.
+  PARAMETERS: cc          TYPE adr6-smtp_addr.
+  PARAMETERS: bcc         TYPE adr6-smtp_addr.
+  PARAMETERS: subject     TYPE so_obj_des.
+SELECTION-SCREEN END OF BLOCK 00.
+
+SELECTION-SCREEN BEGIN OF BLOCK 01 WITH FRAME TITLE TEXT-001.
+  PARAMETERS: mensaje   TYPE string.
+SELECTION-SCREEN END OF BLOCK 01.
+
+SELECTION-SCREEN BEGIN OF BLOCK 02 WITH FRAME TITLE TEXT-002.
+  SELECTION-SCREEN PUSHBUTTON 1(20) btn_add USER-COMMAND btn_add.
+  SELECTION-SCREEN COMMENT 30(30) co_ar_ad.
+SELECTION-SCREEN END OF BLOCK 02.
+
+SELECTION-SCREEN BEGIN OF BLOCK 03 WITH FRAME TITLE TEXT-003.
+  SELECTION-SCREEN PUSHBUTTON 20(20) send USER-COMMAND send MODIF ID 010.
+  SELECTION-SCREEN PUSHBUTTON 50(25) canc USER-COMMAND canc.
+SELECTION-SCREEN END OF BLOCK 03.
+
+//////////////////////////////////////////////////////////////////////////////////////////
+
+*&---------------------------------------------------------------------*
+*& Include          ZENVIAR_CORREO_F01
+*&---------------------------------------------------------------------*
+FORM adjuntar_archivos  USING cv_path TYPE rlgrap-filename.
+
+  DATA: lt_file_table  TYPE filetable.
+  DATA: lv_rc          TYPE i.
+  DATA: lt_bin_data    TYPE solix_tab.
+  DATA: lv_filename    TYPE string.
+  DATA: lv_bin_size    TYPE i.
+
+  cl_gui_frontend_services=>file_open_dialog( CHANGING   file_table              = lt_file_table
+                                                         rc                      = lv_rc
+                                              EXCEPTIONS file_open_dialog_failed = 1
+                                                         cntl_error              = 2
+                                                         error_no_gui            = 3
+                                                         not_supported_by_gui    = 4
+                                                         OTHERS                  = 5 ).
+
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+
+  ENDIF.
+
+  TRY.
+      cv_path = lt_file_table[ 1 ]-filename.
+    CATCH cx_sy_itab_line_not_found.
+      REFRESH lt_file_table.
+  ENDTRY.
+
+  lv_filename = cv_path.
+  cl_gui_frontend_services=>gui_upload( EXPORTING filename   = lv_filename
+                                                  filetype   = 'BIN'
+                                        IMPORTING filelength = lv_bin_size
+                                        CHANGING  data_tab   = lt_bin_data
+                                                ).
+  CLEAR gs_file.
+  gs_file-filename = lv_filename.
+  gs_file-filedata = lt_bin_data.
+  gs_file-filesize = lv_bin_size.
+  IF gs_file IS NOT INITIAL.
+    APPEND gs_file TO gt_files.
+    ADD 1 TO gv_contador_archivos.
+    co_ar_ad = gv_contador_archivos.
+    CONDENSE co_ar_ad.
+    co_ar_ad = gv_text_archivo && ` ` && gv_contador_archivos.
+  ENDIF.
+
+ENDFORM.
+
+FORM generar_correo.
+
+  DATA: lo_document         TYPE REF TO cl_document_bcs.
+  DATA: lt_mensaje_string   TYPE TABLE OF string.
+  DATA: lt_mensaje_bcsy     TYPE TABLE OF bcsy_text.
+  DATA: lo_sender           TYPE REF TO if_sender_bcs.
+  DATA: lt_to               TYPE TABLE OF ad_smtpadr.
+  DATA: lt_cc               TYPE TABLE OF ad_smtpadr.
+  DATA: lt_bcc              TYPE TABLE OF ad_smtpadr.
+  DATA: lo_recipient        TYPE REF TO if_recipient_bcs.
+  DATA: lt_mensaje_soli     TYPE soli_tab.
+  DATA: lv_filename_50      TYPE so_obj_des.
+  DATA: lt_sapuser          TYPE TABLE OF uname.
+
+  FIELD-SYMBOLS: <fs_recipients> TYPE ad_smtpadr,
+                 <fs_sapuser>    TYPE uname.
+
+  TRY.
+
+      go_bcs_send_request = cl_bcs=>create_persistent( ).
+      lo_sender = cl_sapuser_bcs=>create( sy-uname ).
+      go_bcs_send_request->set_sender( lo_sender ).
+
+      CONDENSE: mailto, cc, bcc, sapuser.
+      SPLIT sapuser AT ';' INTO TABLE lt_sapuser.
+      SPLIT mailto AT ';' INTO TABLE lt_to.
+      SPLIT cc AT ';' INTO TABLE lt_cc.
+      SPLIT bcc AT ';' INTO TABLE lt_bcc.
+
+      LOOP AT lt_sapuser ASSIGNING <fs_sapuser>.
+        CONDENSE <fs_sapuser>.
+        lo_recipient = cl_sapuser_bcs=>create( <fs_sapuser> ).
+        go_bcs_send_request->add_recipient( lo_recipient ).
+      ENDLOOP.
+
+      LOOP AT lt_to ASSIGNING <fs_recipients>.
+        CONDENSE <fs_recipients>.
+        lo_recipient = cl_cam_address_bcs=>create_internet_address( i_address_string = <fs_recipients> ).
+        go_bcs_send_request->add_recipient( lo_recipient ).
+      ENDLOOP.
+      LOOP AT lt_cc ASSIGNING <fs_recipients>.
+        CONDENSE <fs_recipients>.
+        lo_recipient = cl_cam_address_bcs=>create_internet_address( i_address_string = <fs_recipients> ).
+        go_bcs_send_request->add_recipient( i_recipient = lo_recipient
+                                            i_copy      = cl_bcs_message=>gc_cc ).
+      ENDLOOP.
+      LOOP AT lt_bcc ASSIGNING <fs_recipients>.
+        CONDENSE <fs_recipients>.
+        lo_recipient = cl_cam_address_bcs=>create_internet_address( i_address_string = <fs_recipients> ).
+        go_bcs_send_request->add_recipient( lo_recipient ).
+      ENDLOOP.
+
+      SPLIT mensaje AT cl_bcs_convert=>gc_crlf INTO TABLE lt_mensaje_soli.
+
+      lo_document = cl_document_bcs=>create_document(
+        i_type    = 'RAW'
+        i_subject = subject
+        i_text    = lt_mensaje_soli ).
+
+
+
+      LOOP AT gt_files INTO gs_file.
+        lv_filename_50 = gs_file-filename.
+        lo_document->add_attachment(
+          i_attachment_subject = lv_filename_50
+          i_att_content_hex    = gs_file-filedata
+          i_attachment_type    = 'BIN'
+        ).
+      ENDLOOP.
+
+      go_bcs_send_request->set_document( lo_document ).
+
+    CATCH cx_bcs INTO DATA(lx_bcs).
+      RAISE EXCEPTION lx_bcs.
+  ENDTRY.
+
+
+ENDFORM.
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////
+
+*&---------------------------------------------------------------------*
+*& Include          ZENVIAR_CORREO_EVEN
+*&---------------------------------------------------------------------*
+INITIALIZATION.
+btn_add = TEXT-PB1.
+gv_text_archivo = TEXT-PC1.
+co_ar_ad = TEXT-PC1 && ' 0'.
+send = TEXT-PBS.
+canc = TEXT-PBC.
+
+AT SELECTION-SCREEN OUTPUT.
+    IF mailto IS INITIAL.
+      LOOP AT SCREEN.
+        IF screen-group1 = 010.
+          screen-input = 0.
+          MODIFY SCREEN.
+        ELSE.
+          IF screen-group1 = 010.
+             screen-input = 1.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+AT SELECTION-SCREEN.
+
+CASE sy-ucomm.
+  WHEN 'BTN_ADD'.
+    PERFORM adjuntar_archivos USING gv_path.
+  WHEN 'SEND'.
+    try.
+    PERFORM generar_correo.
+    catch cx_bcs into data(lo_error).
+    WRITE: 'Error al generar el correo', lo_error->get_text(  ).
+    ENDTRY.
+  WHEN 'CANC'.
+    LEAVE TO SCREEN 0.
+ENDCASE.
+
+START-OF-SELECTION.
+IF go_bcs_send_request IS INITIAL.
+  WRITE: 'algo anda mal'.
+ELSE.
+  TRY.
+   sent_to_all = go_bcs_send_request->send( i_with_error_screen = 'X' ).
+  CATCH cx_bcs INTO DATA(lx_send).
+    lx_send->get_text( ).
+  ENDTRY.
+ENDIF.
+DATA(send_result) = go_bcs_send_request->state( ).
+WRITE: send_result, send_result.
